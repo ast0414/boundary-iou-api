@@ -82,7 +82,7 @@ class PQStat():
 
 
 @get_traceback
-def pq_compute_single_core(proc_id, annotation_set, gt_folder, pred_folder, categories, iou_type, dilation_ratio):
+def pq_compute_single_core(proc_id, annotation_set, gt_folder, pred_folder, categories, iou_type, dilation_ratio, verbose):
     pq_stat = PQStat()
 
     # get the largest category id
@@ -94,7 +94,7 @@ def pq_compute_single_core(proc_id, annotation_set, gt_folder, pred_folder, cate
 
     idx = 0
     for gt_ann, pred_ann in annotation_set:
-        if idx % 100 == 0:
+        if (idx % 100 == 0) & verbose:
             print('Core: {}, {} from {} images processed'.format(proc_id, idx, len(annotation_set)))
         idx += 1
 
@@ -234,19 +234,22 @@ def pq_compute_single_core(proc_id, annotation_set, gt_folder, pred_folder, cate
             if intersection / pred_info['area'] > 0.5:
                 continue
             pq_stat[pred_info['category_id']].fp += 1
-    print('Core: {}, all {} images processed'.format(proc_id, len(annotation_set)))
+
+    if verbose:
+        print('Core: {}, all {} images processed'.format(proc_id, len(annotation_set)))
     return pq_stat
 
 
-def pq_compute_multi_core(matched_annotations_list, gt_folder, pred_folder, categories, iou_type, dilation_ratio):
+def pq_compute_multi_core(matched_annotations_list, gt_folder, pred_folder, categories, iou_type, dilation_ratio, verbose):
     cpu_num = multiprocessing.cpu_count()
     annotations_split = np.array_split(matched_annotations_list, cpu_num)
-    print("Number of cores: {}, images per core: {}".format(cpu_num, len(annotations_split[0])))
+    if verbose:
+        print("Number of cores: {}, images per core: {}".format(cpu_num, len(annotations_split[0])))
     workers = multiprocessing.Pool(processes=cpu_num)
     processes = []
     for proc_id, annotation_set in enumerate(annotations_split):
         p = workers.apply_async(pq_compute_single_core,
-                                (proc_id, annotation_set, gt_folder, pred_folder, categories, iou_type, dilation_ratio))
+                                (proc_id, annotation_set, gt_folder, pred_folder, categories, iou_type, dilation_ratio, verbose))
         processes.append(p)
     pq_stat = PQStat()
     for p in processes:
@@ -254,7 +257,8 @@ def pq_compute_multi_core(matched_annotations_list, gt_folder, pred_folder, cate
     return pq_stat
 
 
-def pq_compute(gt_json_file, pred_json_file, gt_folder=None, pred_folder=None, iou_type="segm", dilation_ratio=0.02):
+def pq_compute(gt_json_file, pred_json_file, gt_folder=None, pred_folder=None, gt_img_ids=None, iou_type="segm",
+               dilation_ratio=0.02, verbose=True):
 
     start_time = time.time()
     with open(gt_json_file, 'r') as f:
@@ -268,13 +272,14 @@ def pq_compute(gt_json_file, pred_json_file, gt_folder=None, pred_folder=None, i
         pred_folder = pred_json_file.replace('.json', '')
     categories = {el['id']: el for el in gt_json['categories']}
 
-    print("Evaluation panoptic segmentation metrics:")
-    print("Ground truth:")
-    print("\tSegmentation folder: {}".format(gt_folder))
-    print("\tJSON file: {}".format(gt_json_file))
-    print("Prediction:")
-    print("\tSegmentation folder: {}".format(pred_folder))
-    print("\tJSON file: {}".format(pred_json_file))
+    if verbose:
+        print("Evaluation panoptic segmentation metrics:")
+        print("Ground truth:")
+        print("\tSegmentation folder: {}".format(gt_folder))
+        print("\tJSON file: {}".format(gt_json_file))
+        print("Prediction:")
+        print("\tSegmentation folder: {}".format(pred_folder))
+        print("\tJSON file: {}".format(pred_json_file))
 
     if not os.path.isdir(gt_folder):
         raise Exception("Folder {} with ground truth segmentations doesn't exist".format(gt_folder))
@@ -285,11 +290,17 @@ def pq_compute(gt_json_file, pred_json_file, gt_folder=None, pred_folder=None, i
     matched_annotations_list = []
     for gt_ann in gt_json['annotations']:
         image_id = gt_ann['image_id']
+
+        if gt_img_ids is not None:
+            if image_id not in gt_img_ids:
+                continue
+
         if image_id not in pred_annotations:
             raise Exception('no prediction for the image with id: {}'.format(image_id))
         matched_annotations_list.append((gt_ann, pred_annotations[image_id]))
 
-    pq_stat = pq_compute_multi_core(matched_annotations_list, gt_folder, pred_folder, categories, iou_type, dilation_ratio)
+    pq_stat = pq_compute_multi_core(matched_annotations_list, gt_folder, pred_folder, categories, iou_type,
+                                    dilation_ratio, verbose)
 
     metrics = [("All", None), ("Things", True), ("Stuff", False)]
     results = {}
@@ -309,8 +320,9 @@ def pq_compute(gt_json_file, pred_json_file, gt_folder=None, pred_folder=None, i
             results[name]['n'])
         )
 
-    t_delta = time.time() - start_time
-    print("Time elapsed: {:0.2f} seconds".format(t_delta))
+    if verbose:
+        t_delta = time.time() - start_time
+        print("Time elapsed: {:0.2f} seconds".format(t_delta))
 
     return results
 
